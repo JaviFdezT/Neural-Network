@@ -10,14 +10,15 @@ Created on Mon Aug 17 18:53:14 2020
 
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy.optimize import curve_fit
 import pandas as pd 
 import sys
 from sklearn.utils import shuffle
 import random
 import warnings
+from datetime import datetime
 from sklearn.model_selection import train_test_split
 warnings.filterwarnings("ignore")
+import tqdm
 
 
 
@@ -90,13 +91,7 @@ class NeuralNetwork:
         Returns
         -------
         None.
-
         """        
-        if normalize:
-            self.normalization=[(np.max(indata)-np.min(indata),np.min(indata)),
-                                (np.max(target)-np.min(target),np.min(target))]
-        else:
-            self.normalization=[(1.0,0.0),(1.0,0.0)]
         self.nhlayers=nhlayers
         self.nodes=nodes
         self.doshuffle=doshuffle
@@ -106,19 +101,36 @@ class NeuralNetwork:
         self.batchpercent=batchpercent 
         self.tolerance=tolerance
         self.plot=plot
+        self.features=indata.shape[-1]
+        self.outputs=target.shape[-1]
+        
+        self.normalization=[]
+        for i in range(self.features):
+            if normalize and np.max(indata[:,i])-np.min(indata[:,i])>0:
+                self.normalization.append(((np.max(indata[:,i])-np.min(indata[:,i]))/2,np.min(indata[:,i])))
+            else:
+                self.normalization.append((1.0,0.0))
+        for i in range(self.outputs):
+            if normalize and np.max(target[:,i])-np.min(target[:,i])>0:
+                self.normalization.append(((np.max(target[:,i])-np.min(target[:,i]))/2,np.min(target[:,i])))
+            else:
+                self.normalization.append((1.0,0.0))
+        self.normalization=np.array(self.normalization)
+        
+        for i in range(self.features):
+            indata[:,i]=(np.array(indata[:,i])-self.normalization[i][1])/self.normalization[i][0]-1
+        for i in range(self.outputs):
+            target[:,i]=(np.array(target[:,i])-self.normalization[i+self.features][1])/self.normalization[i+self.features][0]-1
+        
         self.indata, self.testdata, self.target, self.targetdata = train_test_split(
-            (np.array(indata)-self.normalization[0][1])/self.normalization[0][0],
-            (np.array(target)-self.normalization[1][1])/self.normalization[1][0], 
-            test_size=test_size, random_state=42,shuffle=self.doshuffle)
+            indata,target,test_size=test_size, random_state=42,shuffle=self.doshuffle)
      
         
-        self.features=self.indata.shape[-1]
-        self.outputs=self.target.shape[-1]
         w=[]
         w.append(np.ones((nodes[0],self.features+1),))
         for i in range(nhlayers-1):
             w.append(np.random.random((nodes[i+1],nodes[i]+1),))
-        w.append(np.random.random((self.features,nodes[-1]+1),))
+        w.append(np.random.random((self.outputs,nodes[-1]+1),))
         self.weights=np.array(w)
         self.miner=1e5
         
@@ -210,11 +222,15 @@ class NeuralNetwork:
             (mxp) matrix, where m is the number of points and p is the number of
                      output features.
 
-        """       
-        inputvalue=(np.array(inputvalue)-self.normalization[0][1])/self.normalization[0][0]
-        output=[self.forward(np.array(list(row))) for row in inputvalue]
-        return (np.array(output))*self.normalization[1][0]+self.normalization[1][1]
-    
+        """
+        for i in range(self.features):
+            inputvalue[:,i]=(np.array(inputvalue[:,i])-self.normalization[i][1])/self.normalization[i][0]-1
+               
+        output=np.array([self.forward(np.array(list(row))) for row in inputvalue])
+        for i in range(self.outputs):
+            output[:,i]=(output[:,i]+1)*self.normalization[i+self.features][0]+self.normalization[i+self.features][1]
+        return output 
+         
     def forward(self,traininput):
         """
         Forward propagation given an input value.
@@ -237,12 +253,12 @@ class NeuralNetwork:
         self.hlayers.append([1]+list(traininput))
         for layer in list(range(self.nhlayers+1)):
             if layer==self.nhlayers:
-                self.outlay=list(self.fo(np.dot(self.weights[layer],self.hlayers[-1])))
+                self.outlay=np.array(self.fo(np.dot(self.weights[layer],self.hlayers[-1])))
             else:
                 self.hlayers.append([1]+list(self.fh(np.dot(self.weights[layer],self.hlayers[-1]))))
+        self.hlayers=np.array(self.hlayers)
         return self.outlay
         
-    
     def train(self):
         """
         Train the NN.        
@@ -252,19 +268,24 @@ class NeuralNetwork:
         None.
 
         """
-        for run in range(self.epoch):
+        
+        start_time = datetime.now()
+        for run in tqdm.tqdm(range(self.epoch)):
+          """if (run+1)/self.epoch in [1,0.9,0.8,0.7,0.6,0.6]:
+              print("Epoch:",run+1,"(",str(100*(run+1)/self.epoch),"% )")
+          """
           for row in np.random.choice(len(self.indata), int(np.ceil(len(self.indata)*self.batchpercent))):           
             self.forward(self.indata[row])
             for layer in list(reversed(range(self.nhlayers+1))):
                 if layer==self.nhlayers:            
                     #print(delta,np.transpose(np.array(hlayers[layer][1:])))
                     delta=np.multiply(self.outlay-self.target[row],self.derfo(np.dot(self.weights[layer],self.hlayers[layer])))
-                    change=np.dot(delta,np.array(self.hlayers[layer]).reshape(1,len(self.hlayers[layer])))
+                    change=np.dot(delta.reshape(self.outputs,1),np.array(self.hlayers[layer]).reshape(1,len(self.hlayers[layer])))
                     self.weights[layer]-=self.lrate*change
                 else:      
                     if layer!=self.nhlayers-1:   
                         delta=delta[1:]
-                    delta=np.multiply(np.dot(np.transpose(self.weights[layer+1]),delta),[1]+list(self.derfh(np.dot(self.weights[layer],self.hlayers[layer]))))
+                    delta=np.multiply(np.dot(np.transpose(self.weights[layer+1]),delta),np.array([1]+list(self.derfh(np.dot(self.weights[layer],self.hlayers[layer])))))
                     change=np.dot(delta[1:].reshape(self.nodes[layer],1),np.array(self.hlayers[layer]).reshape(1,len(self.hlayers[layer])))
                     self.weights[layer]-=self.lrate*change
             error=np.sum((self.outlay-self.target[row])**2)/len(self.outlay)
@@ -272,7 +293,12 @@ class NeuralNetwork:
                 self.miner=error
             if self.tolerance<self.miner:
                 pass
-    
+        time_elapsed = datetime.now() - start_time
+        print("###################")
+
+        print('Time elapsed (hh:mm:ss.ms) {}'.format(time_elapsed))
+
+
     def test(self):
         """
         Tests the performance of the NN.        
@@ -284,29 +310,19 @@ class NeuralNetwork:
         """
         try:
             ers=[]
-            outputdata=[self.forward([i]) for i in self.testdata]
+            outputdata=[self.forward(i) for i in self.testdata]
             if self.plot:print("INPUT   -   TARGET    -   OUTPUT    -   100(t-o)/t [%]")
             for el in range(len(self.testdata)):
                 if self.plot:print(self.testdata[el],"-",self.targetdata[el],"-",outputdata[el],"-",100*abs(outputdata[el]-self.targetdata[el])/self.targetdata[el])
                 if outputdata[el]-self.targetdata[el]<0.01:
                     ers.append(0)
                 else:
-                    ers.append(100*abs(outputdata[el]-self.targetdata[el])/self.targetdata[el])
+                    ers.append(100*abs(outputdata[el]-self.targetdata[el])/abs(self.targetdata[el]))
             ers=np.array(ers)
             ers[ers >= 1E308] = 0
             print("###################\nTesting results ...")
             print("Final error =",np.round(ers.mean(),decimals=3),"%")
             print("###################")
-            if len(self.testdata[0])==1 and len(outputdata[0])==1 and self.plot:
-                plt.figure(figsize=(7,5))
-                plt.plot(self.testdata,(np.array(outputdata)-self.normalization[1][1])/self.normalization[1][0],"o-",markersize=9,label="MODEL",color="blue")
-                plt.plot(self.testdata,(np.array(self.targetdata)-self.normalization[1][1])/self.normalization[1][0],"*-",label="Test",color="red")
-                plt.xlabel("input",fontsize=16)
-                plt.ylabel("output",fontsize=16)
-                plt.xticks(fontsize=15)
-                plt.yticks(fontsize=15)
-                plt.legend(fontsize=15,loc="best")
-                if self.savefile:plt.savefig("2dfit.png",bbox_inches='tight')
         except pd.errors.EmptyDataError:pass 
 
     def loadModel(self,filename):
@@ -337,22 +353,32 @@ class NeuralNetwork:
             elif "nodes" in line:
                 data=line.replace("\n","").split("=")                
                 data=np.array([i for i in data[1].split("  ") if len(i)>0],dtype=int)
-                if len(data)!=self.features:
-                    sys.exit("Data couldn't be imported correctly. Dim(nodes)!=features.")
+                if len(data)!=self.nhlayers:
+                    sys.exit("Data couldn't be imported correctly. Dim(nodes)!=nhlayers.")
                 self.nodes=data
             elif "normalization" in line:
                 data=line.replace("\n","").split("=")
                 data=np.array([i for i in data[1].split("  ") if len(i)>0],dtype=float)
-                if len(data)!=4:
+                if len(data)!=2*(self.features+self.outputs):
                     sys.exit("Data couldn't be imported correctly. Dim(vector)!=4.")
-                self.normalization=[(data[0],data[1]),(data[2],data[3])]
+                data=data.reshape(self.features+self.outputs,2)
+                for i in range(len(data)):
+                    data[i]=tuple(data[i])
+                self.normalization=data
             elif "weights" in line:
                 w=[]
                 for i in range(self.nhlayers+1):
                     data=file.readline()
                     data=[i for i in data.replace("\n","").split(" ") if len(i)>0]
-                    data=np.reshape(np.array(data[2:],dtype=float),(int(data[0]),int(data[1])))
-                    w.append(data)
+                    if len(data)==2:
+                        curw=[]
+                        wx,wy=int(data[0]),int(data[1])
+                        for i in range(wx*wy):    
+                            data=file.readline()
+                            data=[i for i in data.replace("\n","").split(" ") if len(i)>0]
+                            curw.append(float(data[0]))
+                        curw=np.reshape(np.array(curw,dtype=float),(wx,wy))
+                        w.append(curw)
                 self.weights=np.array(w)
         file.close()
             
@@ -375,10 +401,15 @@ class NeuralNetwork:
         file.write("outputs="+str(self.outputs)+"\n")
         file.write("nhlayers="+str(self.nhlayers)+"\n")
         file.write("nodes="+"  ".join([str(nodes) for nodes in self.nodes])+"\n")
-        file.write("normalization="+"  ".join([str(self.normalization[0][0]),str(self.normalization[0][1]),str(self.normalization[1][0]),str(self.normalization[1][1])])+"\n")
+        norm=list()
+        for item in self.normalization:
+            norm.append(item[0])
+            norm.append(item[1])
+        file.write("normalization="+"  ".join([str(item) for item in norm])+"\n")
         file.write("weights=\n")
         for i in range(self.nhlayers+1):
-            file.write((str(self.weights[i].shape[0])+"  "+str(self.weights[i].shape[1])+"  "+
-                    "  ".join([str(w) for w in self.weights[i].reshape(1,self.weights[i].shape[0]*self.weights[i].shape[1])])+"\n").replace("[","").replace("]",""))
+            file.write((str(self.weights[i].shape[0])+"  "+str(self.weights[i].shape[1])+"\n"))
+            for weight in self.weights[i].reshape(1,self.weights[i].shape[0]*self.weights[i].shape[1])[0]:
+                file.write(str(weight)+"\n")
         file.close()
             
